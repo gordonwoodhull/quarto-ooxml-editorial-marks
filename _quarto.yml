@@ -1,0 +1,5 @@
+project:
+  type: default
+
+filters:
+  - quarto-ooxml-editorial-marks
