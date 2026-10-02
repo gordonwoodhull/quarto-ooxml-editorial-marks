@@ -60,7 +60,7 @@ def docx_assertions(path, expected):
             "authors": sorted(re.findall(r'<w:(?:ins|del) [^>]*w:author="([^"]*)"', document_xml)),
         }
         for key, expected_value in expected.items():
-            if key == "comments" or key == "comment_ids":
+            if key in ("comments", "comment_ids", "comment_authors"):
                 continue
             if actual.get(key) != expected_value:
                 errors.append(
@@ -89,6 +89,13 @@ def docx_assertions(path, expected):
                     errors.append(
                         f"{path.name}: comments relationship missing from document.xml.rels"
                     )
+                if "comment_authors" in expected:
+                    authors = sorted(re.findall(r'<w:comment [^>]*w:author="([^"]*)"', comments_xml))
+                    if authors != expected["comment_authors"]:
+                        errors.append(
+                            f"{path.name}: expected comment_authors="
+                            f"{expected['comment_authors']}, got {authors}"
+                        )
                 for comment_id in expected.get("comment_ids", []):
                     if f'w:id="{comment_id}"' not in comments_xml:
                         errors.append(
@@ -150,7 +157,14 @@ EXPECTATIONS = {
     },
     "07-authors.qmd": {
         "docx": dict(ins=2, delete=2, comment_range_start=1, comment_range_end=1,
-                      comments=1, authors=["Eve", "Frank", "Gina", "Hal"]),
+                      comments=1, authors=["Eve", "Frank", "Gina", "Hal"],
+                      comment_authors=["Ivy"]),
+    },
+    "08-multi-author.qmd": {
+        "docx": dict(ins=3, delete=1, highlight=1, comment_range_start=3,
+                      comment_range_end=3, comments=3,
+                      authors=["Alice Author", "Bob Builder", "Bob Builder", "Bob Builder"],
+                      comment_authors=["Bob Builder", "Carol Critic", "Dana Explicit"]),
     },
     "06-pptx-marks.qmd": {
         "pptx": dict(underline=1, strike=1, highlight=1, comment_fallback=1),
