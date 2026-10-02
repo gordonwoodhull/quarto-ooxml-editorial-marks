@@ -2,190 +2,182 @@
 
 A Quarto 2 extension that translates Quarto's editorial-mark syntax
 (insertions, deletions, highlights, and comments) into native Office Open XML
-(OOXML) track-changes markup and comments for `docx` and `pptx` output.
+track changes and comments for `docx` output, with a visual fallback for
+`pptx`.
 
 ```
 [++ inserted text]   / ::: ++   ->  Word tracked insertion
 [-- deleted text]    / ::: --   ->  Word tracked deletion
 [!! highlighted]     / ::: !!   ->  Word highlight
-[>> a comment]       / ::: >>   ->  Word/PowerPoint comment
+[>> a comment]       / ::: >>   ->  Word comment
 ```
 
-## Status
+## Usage
 
-Implemented and tested against all `examples/*.qmd`, both directly with
-`pandoc --lua-filter` and end-to-end through `q2 render` (real q2 →
-Pandoc-hybrid render leg). See `tests/run-tests.py` for the regression suite.
+Copy `_extensions/quarto-ooxml-editorial-marks/` into your project and list
+the extension in the project's `filters:` (see `_quarto.yml`). It requires
+Quarto 2.
 
-- `_extensions/quarto-ooxml-editorial-marks/_extension.yml` — the extension
-  manifest, contributing a single Lua filter at `at: post-quarto`.
-- `_extensions/quarto-ooxml-editorial-marks/ooxml-editorial-marks.lua` — the
-  filter. Full native docx support for all four mark types; best-effort
-  visual fallbacks for pptx (see below).
-- `_quarto.yml` — activates the filter project-wide.
-- `examples/*.qmd` — six documents exercising inline and block forms of
-  every mark type, attributes, nesting (including the comment-fold and
-  comment-container cases), marks inside lists/quotes/tables/headings, and
-  one pptx example.
-- `tests/run-tests.py` — renders every example via `q2 render` and asserts
-  on the produced OOXML's structural shape (mark counts, comments.xml
-  registration, XML well-formedness). Run with:
-  ```
-  python3 tests/run-tests.py --q2 /path/to/q2/target/debug/q2
-  ```
+### Authors and dates
+
+Any mark except a highlight can carry `author=` and `date=` (an ISO 8601
+timestamp), which become `w:author` and `w:date` in the docx:
+
+```
+Bob changes [-- old]{author="Bob Builder" date="2026-02-11T11:30:00Z"}[++ new]{author="Bob Builder"} text.
+
+::: >> {author="Carol Critic"}
+A block comment.
+:::
+```
+
+Without `author=`, Word shows the author as "unknown" for insertions and
+deletions.
+
+### Authors from git
+
+Rendering with q2's git attribution fills in the author and date of every
+mark that doesn't set them itself, from `git blame` on the mark's source
+lines:
+
+```
+q2 render doc.qmd --to docx --attribution=git
+```
+
+Each person who committed marks then appears as a separate author in Word's
+Review pane. The name defaults to the local part of the committer's email;
+to use full names, map the emails in the document or project metadata
+(both `name` and `color` are required, or the entry is ignored):
+
+```yaml
+attribution:
+  identities:
+    bob@example.com: {name: Bob Builder, color: "#cc0000"}
+```
+
+Attribution data is available to docx and pptx from the q2 release that
+includes
+[q2 #781](https://github.com/quarto-dev/q2/pull/781) onwards. Without
+`--attribution=git`, or where a mark's lines can't be blamed (uncommitted
+text), the mark is left as written. Explicit `author=` and `date=`
+attributes always win. Highlights have no author in OOXML, and pptx output
+ignores authors.
+
+## Layout
+
+- `_extensions/quarto-ooxml-editorial-marks/_extension.yml` — the manifest.
+  It contributes two filters:
+  - `ooxml-editorial-marks.lua` at `post-quarto` rewrites the marks. It
+    handles docx and pptx and does nothing for other formats.
+  - `stamp-attribution.lua` at `pre-quarto` copies git-blamed author and
+    date onto the marks (see below).
+- `_quarto.yml` — activates the filters project-wide.
+- `examples/*.qmd` — documents exercising the marks: inline and block forms,
+  attributes, nesting (including a comment inside another mark), marks inside
+  lists, quotes, tables and headings, a comment on a code block, explicit
+  authors (`07`, `08`), and one pptx document (`06`).
+- `tests/run-tests.py` — renders every example with `q2 render` and asserts
+  on the structure of the produced OOXML: mark counts, authors,
+  `comments.xml` registration, and well-formed XML in every part.
+
+```
+python3 tests/run-tests.py --q2 /path/to/q2/target/debug/q2
+```
 
 ## How it works
 
-The key discovery that shaped this implementation: **pandoc's docx writer
-already has native, undocumented-in-the-manual support for exactly the
-classes we need**, verified empirically against pandoc 3.11's Haskell
-source (`~/src/pandoc/src/Text/Pandoc/Writers/Docx/OpenXML.hs`):
+### docx
 
-- A `Span` whose classes include `"insertion"` becomes a real
-  `<w:ins w:id=".." w:author=".." w:date="..">` — `w:id` is auto-numbered by
-  pandoc itself, `w:author`/`w:date` come from `author=`/`date=` kv
-  attributes (default author `"unknown"` if absent). `"deletion"` is the
-  `<w:del>`/`<w:delText>` equivalent. Both checks are simple list-membership
-  tests, so other classes/ids/kvs on the same Span are untouched and pass
-  through fine.
-- A **bare** `Span` — no id, exactly one class `"mark"`, no kv attributes —
-  becomes a run with `<w:highlight w:val="yellow"/>`. This match is narrow:
-  *any* extra id/class/kv on the Span makes it fall through to generic
-  handling with no highlight applied at all. So the filter's highlight
-  handler intentionally discards id/extra classes/kvs — there's no OOXML
-  home for them on a highlighted run anyway.
-- A `Span` with class `"comment-start"` is special: its own *content*
-  becomes the comment's text in `word/comments.xml` (not visible body
-  text), and it emits a zero-width `<w:commentRangeStart>`. A matching
-  `"comment-end"` Span (same `id` kv) emits `<w:commentRangeEnd>` +
-  `<w:commentReference>`, and *its* content (if any) renders as ordinary
-  visible body text. `word/comments.xml` itself, its content-type override,
-  and the document relationship are all generated by pandoc automatically.
+Pandoc's docx writer has native support, not described in its manual, for
+exactly the classes needed:
 
-**This eliminates the zip-level post-processing this repo originally
-assumed comments would need.** No unzip/inject/rezip step exists or is
-required — the filter only ever returns AST nodes.
+- A `Span` whose classes include `insertion` becomes `<w:ins>`, and
+  `deletion` becomes `<w:del>`/`<w:delText>`. `w:id` is numbered by pandoc;
+  `w:author` and `w:date` come from the span's `author=` and `date=`
+  attributes. Other classes and attributes on the span pass through.
+- A **bare** `Span` — no id, a single class `mark`, no attributes — becomes
+  a run with `<w:highlight w:val="yellow"/>`. Any extra id, class or
+  attribute makes it fall through with no highlight, so the highlight
+  handler drops them.
+- A `Span` with class `comment-start` emits `<w:commentRangeStart>`, and its
+  *content* becomes the comment text in `word/comments.xml`. A matching
+  `comment-end` span (same `id`) emits `<w:commentRangeEnd>` and the
+  `<w:commentReference>`. Pandoc generates `comments.xml`, its content-type
+  override and the relationship itself.
 
-None of this applies to `Div` (block) nodes — the writer ignores a Div's
-classes entirely. Block-level marks (`::: ++`, `::: --`, `::: !!`, `::: >>`)
-are handled by recursively wrapping each leaf paragraph's *inline content*
-in the same marker `Span`, so the run-level native handling above still
-fires once each paragraph is individually written. A block comment is the
-one exception to "wrap and pass through": per the `quarto-edit-comment`
-semantics (see below), its content is *also* kept as the comment's message,
-with range markers spliced onto the first/last paragraph rather than the
-whole div being unwrapped into plain paragraphs.
+So the filter only ever returns AST nodes; there is no zip-level
+post-processing.
 
-### Nesting: a mark inside another mark
+The writer ignores the classes on a `Div`. Block marks are therefore handled
+by wrapping the inline content of each leaf paragraph (or header) in the same
+span. A block comment is the exception: its content is also kept as the
+comment's message, with the range markers spliced onto its first and last
+blocks.
 
-Two nesting rules matter, and pandoc's own `Lua` filter traversal turned out
-to be the wrong tool for both of them:
+### Nesting
 
-- A mark nested inside an **insertion/deletion/highlight** must still get
-  its own independent OOXML treatment (e.g. a comment nested inside a
-  block insertion is a real, separate Word comment).
-- A mark nested inside a **comment** must instead fold into the outer
-  comment's plain-text message rather than becoming independent — this
-  mirrors `quarto-core`'s `document_profile.rs`, whose
-  `profile_extract_block_comment_is_a_leaf` test treats *any* content
-  inside a `quarto-edit-comment` Div/Span as a leaf, full stop, regardless
-  of what's nested inside.
+- A mark nested inside an insertion, deletion or highlight is converted
+  independently. A comment inside a block insertion is a real, separate Word
+  comment.
+- A mark nested inside a **comment** folds into the comment's plain-text
+  message. This matches q2's `document_profile.rs`, which treats everything
+  inside a `quarto-edit-comment` as a leaf.
 
-The filter uses `traverse = "topdown"`, but empirically, **pandoc's topdown
-walk does not re-descend into a `Blocks`/`Inlines` *list* returned as a
-replacement** (verified directly: a Div filter that returns
-`pandoc.Blocks({...})` never gets its topdown walk continued into that
-list's elements, regardless of the second `true`/`false` return value —
-only a single-node replacement does). Since nearly every handler here
-returns exactly such a list (splicing paragraphs, or a comment-start +
-comment-end pair), relying on the walker to separately visit a nested mark
-left untouched inside one of those lists would silently skip it — which is
-exactly the bug the first nesting test in this repo's history caught (a
-comment nested inside a block insertion vanished entirely). The fix: the
-block-wrapping helper (`wrap_blocks_with_span` in the filter) detects a
-nested block that itself carries a recognized `quarto-*` class and
-recursively calls the filter's own dispatch function on it directly,
-rather than leaving it for the walker.
+Pandoc's `traverse = "topdown"` walk does not descend into a `Blocks` or
+`Inlines` list returned as a replacement, and most handlers return such a
+list. The block-wrapping helper (`wrap_blocks_with_span`) therefore
+dispatches nested marks itself instead of leaving them to the walker.
+Comments rely on the opposite: they keep their original content unvisited,
+so nested marks are left with their `quarto-*` class, which neither this
+filter nor pandoc recognises, and render as text.
 
-Comment-folding, by contrast, falls out for free: `handle_edit_comment`
-reuses the mark's original, not-yet-recursed content directly as the
-comment-start Span's message. Since we never separately re-dispatch into
-it, any nested `quarto-*` mark inside is left with its original class,
-unrecognized by both our filter and pandoc's writer — so it just renders
-as plain text as part of the comment message. No manual text-flattening
-needed for the inline case; the block-comment case does flatten (see
-`pandoc.utils.blocks_to_inlines`) since a comment-start Span needs Inlines
-content and a block comment's own content is Blocks.
+### A comment on a code block
 
-### The "comment on a code block" idiom — corrected
+`.quarto-edit-comment-container` has no special meaning. The extractor in
+`document_profile.rs` treats a `[>> ... ]` mark after a code block as its own
+independent comment, with no text from the code block. This filter does the
+same: the code block renders untouched, with its syntax highlighting, and the
+comment becomes a standalone `<w:comment>`. See `examples/05-comment-on-code.qmd`.
 
-The original scaffolding session's README claimed a
-`.quarto-edit-comment-container` Div wrapping a code block plus a trailing
-`[>> ... ]` mark was "one comment about that code" — **this was wrong**,
-contradicted directly by `document_profile.rs`'s own test suite. Its
-`profile_extract_block_comment_is_a_leaf` test explicitly asserts: *"the
-comment container Div used for code-block threads is not a comment"* — the
-container has no special meaning at all; it's an ordinary Div, and the
-extractor just walks into it and finds the trailing `[>> ... ]` mark as its
-own **independent** comment, with the code block contributing nothing to
-its text. This filter follows that corrected understanding: it does not
-special-case `.quarto-edit-comment-container` at all. The code block
-renders untouched (with normal syntax highlighting preserved), and the
-trailing comment becomes its own standalone `<w:comment>`. See
-`examples/05-comment-on-code.qmd` and the corresponding test assertions.
+### Authorship stamping
 
-## pptx
+The docx filter runs in a real `pandoc` subprocess (q2's Pandoc-hybrid
+render path), which has neither `quarto.attribution` nor source positions.
+`stamp-attribution.lua` runs earlier, at `pre-quarto`, inside q2's own Lua
+engine where both exist. For each insertion, deletion and comment it calls
+`quarto.attribution.lookup(el)` and, on a hit, sets `author` (the identity's
+`name`) and `date` (`time`, epoch seconds, as UTC ISO 8601) unless the
+source already set them. The docx filter then carries those attributes into
+OOXML like any others. When `lookup` returns nil the mark is untouched.
 
-PowerPoint has no writer-level support for any of the docx mechanisms above
-(verified: `Powerpoint/Presentation.hs` ignores `Span` classes entirely, no
-insertion/deletion/mark/comment handling exists), and no inline-anchored
-"real" comment concept reachable from an AST filter — pptx comments are
-anchored to a slide *position*, not a text range, which isn't something a
-Lua AST filter can express. The filter falls back to visual approximations
-built from raw OOXML paragraph elements
-(`pandoc.RawInline("openxml", ...)`, which `Presentation.hs`'s
-`inlineToParElems` turns into a `RawOOXMLParaElem` sibling of `<a:r>` runs):
+Block insertions and deletions carry `author` and `date` onto their wrapping
+span too, since the Div's own attributes are otherwise ignored by the writer.
+
+### pptx
+
+The pptx writer has no handling for any of these classes, and PowerPoint
+comments are anchored to a slide position rather than a text range, which an
+AST filter can't express. The filter instead emits raw OOXML runs
+(`pandoc.RawInline("openxml", ...)`):
 
 - insertion → underlined run (`u="sng"`)
 - deletion → strikethrough run (`strike="sngStrike"`)
-- highlight → `<a:highlight><a:srgbClr val="FFFF00"/></a:highlight>`
-- comment → a bracketed, visually distinct (italic, dark red) inline
-  annotation — not a real PowerPoint comment
+- highlight → `<a:highlight>` with `FFFF00`
+- comment → a bracketed, italic, dark-red inline annotation, not a real
+  PowerPoint comment
 
-These are single flattened runs built via `pandoc.utils.stringify`, so
-nested rich formatting inside a pptx mark is lost. This is a documented
-fallback, in line with the original skeleton's own note that pptx "has no
-native tracked insertion concept -- decide on a fallback." See
-`examples/06-pptx-marks.qmd`.
+Each is a single flattened run built with `pandoc.utils.stringify`, so
+rich formatting inside a pptx mark is lost. See `examples/06-pptx-marks.qmd`.
 
-## AST shape (background)
+## AST shape
 
-q2's markdown parser (`pampa`) desugars all four mark syntaxes into plain
-Pandoc `Span` (inline) / `Div` (block) nodes whose first class is
-`quarto-insert`, `quarto-delete`, `quarto-highlight`, or
-`quarto-edit-comment`. User-supplied classes follow after that first class.
-`id` and key-value attributes survive verbatim — comments commonly carry
-`author=`/`date=`. There is no separate "substitution" mark; a
-delete-then-insert pair (`[-- old][++ new]`) is the idiom for it. (q2:
-`crates/pampa/src/pandoc/treesitter_utils/postprocess.rs`,
-`editorial_div.rs`; class convention also documented in
-`crates/quarto-core/src/document_profile.rs`.)
+q2's markdown parser (`pampa`) turns each mark into a Pandoc `Span` (inline)
+or `Div` (block) whose first class is `quarto-insert`, `quarto-delete`,
+`quarto-highlight` or `quarto-edit-comment`; user classes follow. The id and
+key-value attributes are preserved. There is no substitution mark; a
+deletion followed by an insertion (`[-- old][++ new]`) serves as one.
 
-This extension uses q2's **top-level** `contributes.filters:` mechanism
-(activated when the consuming project lists it by name in its own
-`filters:` metadata), registered `at: post-quarto` — i.e. after Quarto's own
-crossref/preprocessing but before layout. Nested constructs (a comment
-wrapping a callout, panel, or tabset) are not guaranteed to be in their
-final resolved form at this point; none of the current examples exercise
-that case. If it turns out to matter, the escape hatch is moving `at:` to
-`post-render`.
-
-The filter runs as real Lua in a real `pandoc` subprocess for docx/pptx
-(q2's "Pandoc-hybrid render leg"), not through pampa's own restricted Lua
-engine, so ordinary Quarto 1 / Pandoc filter-authoring knowledge and Lua
-filter API docs apply directly — with the caveat about topdown/list-replace
-traversal above, which isn't documented in the pandoc manual and was found
-by direct experiment: a minimal `Div` filter under `traverse = "topdown"`
-that returns `pandoc.Blocks({...})` for a nested `Div` never has that
-inner Div's filter re-invoked, regardless of the second `true`/`false`
-return value. Re-run it yourself if in doubt — it's a five-line filter.
+The docx and pptx filter is registered at `post-quarto`, after crossref and
+other preprocessing but before layout. A comment wrapping a callout, panel or
+tabset may not be in its final form there; no example covers that case. If
+it matters, move `at:` to `post-render`.
