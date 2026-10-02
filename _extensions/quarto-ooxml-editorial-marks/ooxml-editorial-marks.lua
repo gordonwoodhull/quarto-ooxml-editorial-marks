@@ -285,65 +285,38 @@ local function xml_escape(s)
   return (s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
 end
 
--- A single flattened raw run: pptx has no per-run home for a marker class
--- alongside pandoc's native Str/Space handling the way docx does, so we
--- hand-build one `<a:r>` from the fully-stringified content. Nested rich
--- formatting inside the marked span/div is lost; this is a documented
--- fallback, not full fidelity.
-local function pptx_raw_run(text, rpr_xml)
-  local xml = "<a:r><a:rPr" .. rpr_xml .. "/>"
-      .. "<a:t xml:space=\"preserve\">" .. xml_escape(text) .. "</a:t></a:r>"
-  return pandoc.RawInline("openxml", xml)
-end
-
-local function pptx_wrap(el, rpr_xml)
-  local text = pandoc.utils.stringify(el)
-  local raw = pptx_raw_run(text, rpr_xml)
-  if el.t == "Div" then
-    return pandoc.Blocks({ pandoc.Para({ raw }) })
+-- Each pptx mark becomes a single flattened raw `<a:r>` run built from the
+-- fully-stringified content, since pptx has no per-run home for a marker
+-- class alongside pandoc's native Str/Space handling the way docx does.
+-- Nested rich formatting inside the marked span/div is lost; this is a
+-- documented fallback, not full fidelity.
+--
+-- `rpr` is the run's `<a:rPr>` element; `label`, if given, maps
+-- (el, text) to the displayed text (used for comments, which have no
+-- inline-anchored pptx equivalent and so render as a bracketed annotation
+-- at the mark's location).
+local function pptx_handler(rpr, label)
+  return function(el)
+    local text = pandoc.utils.stringify(el)
+    if label then text = label(el, text) end
+    local raw = pandoc.RawInline("openxml",
+      "<a:r>" .. rpr .. "<a:t xml:space=\"preserve\">" .. xml_escape(text) .. "</a:t></a:r>")
+    if el.t == "Div" then
+      return pandoc.Blocks({ pandoc.Para({ raw }) }), false
+    end
+    return pandoc.Inlines({ raw }), false
   end
-  return pandoc.Inlines({ raw })
 end
 
-local function pptx_handle_insert(el)
-  return pptx_wrap(el, " u=\"sng\"")
-end
-
-local function pptx_handle_delete(el)
-  return pptx_wrap(el, " strike=\"sngStrike\"")
-end
-
-local function pptx_handle_highlight(el)
-  local text = pandoc.utils.stringify(el)
-  local xml = "<a:r><a:rPr><a:highlight><a:srgbClr val=\"FFFF00\"/></a:highlight></a:rPr>"
-      .. "<a:t xml:space=\"preserve\">" .. xml_escape(text) .. "</a:t></a:r>"
-  local raw = pandoc.RawInline("openxml", xml)
-  if el.t == "Div" then
-    return pandoc.Blocks({ pandoc.Para({ raw }) })
-  end
-  return pandoc.Inlines({ raw })
-end
-
--- No inline-anchored comment concept exists in pptx; render the comment as
--- a bracketed, visually-distinct annotation immediately at the mark's
--- location rather than a real PowerPoint comment.
-local function pptx_handle_edit_comment(el)
-  local message = pandoc.utils.stringify(el)
-  local author = el.attributes["author"]
-  local label
-  if author then
-    label = " [" .. author .. ": " .. message .. "]"
-  else
-    label = " [comment: " .. message .. "]"
-  end
-  local xml = "<a:r><a:rPr i=\"1\"><a:solidFill><a:srgbClr val=\"C00000\"/></a:solidFill></a:rPr>"
-      .. "<a:t xml:space=\"preserve\">" .. xml_escape(label) .. "</a:t></a:r>"
-  local raw = pandoc.RawInline("openxml", xml)
-  if el.t == "Div" then
-    return pandoc.Blocks({ pandoc.Para({ raw }) }), false
-  end
-  return pandoc.Inlines({ raw }), false
-end
+local pptx_handle_insert = pptx_handler("<a:rPr u=\"sng\"/>")
+local pptx_handle_delete = pptx_handler("<a:rPr strike=\"sngStrike\"/>")
+local pptx_handle_highlight = pptx_handler(
+  "<a:rPr><a:highlight><a:srgbClr val=\"FFFF00\"/></a:highlight></a:rPr>")
+local pptx_handle_edit_comment = pptx_handler(
+  "<a:rPr i=\"1\"><a:solidFill><a:srgbClr val=\"C00000\"/></a:solidFill></a:rPr>",
+  function(el, message)
+    return " [" .. (el.attributes["author"] or "comment") .. ": " .. message .. "]"
+  end)
 
 --------------------------------------------------------------------------
 -- Dispatch
