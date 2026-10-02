@@ -254,29 +254,25 @@ local function docx_handle_edit_comment(el)
     return pandoc.Blocks({ pandoc.Para({ start_span, end_span }) }), false
   end
 
-  local first = blocks[1]
-  if first.t == "Para" or first.t == "Plain" or first.t == "Header" then
-    local new_first = first:clone()
-    local content = pandoc.Inlines({ start_span })
-    for _, il in ipairs(first.content) do content:insert(il) end
-    new_first.content = content
-    blocks[1] = new_first
-  else
-    table.insert(blocks, 1, pandoc.Para({ start_span }))
+  -- Put `span` at the start or end of the first/last block's inlines, or in
+  -- a paragraph of its own when that block has no inlines (e.g. a CodeBlock).
+  local function attach(idx, span, at_start)
+    local blk = blocks[idx]
+    if blk.t == "Para" or blk.t == "Plain" or blk.t == "Header" then
+      local content = pandoc.Inlines({})
+      if at_start then content:insert(span) end
+      content:extend(blk.content)
+      if not at_start then content:insert(span) end
+      blocks[idx] = blk:clone()
+      blocks[idx].content = content
+    elseif at_start then
+      table.insert(blocks, 1, pandoc.Para({ span }))
+    else
+      table.insert(blocks, pandoc.Para({ span }))
+    end
   end
-
-  local last_idx = #blocks
-  local last = blocks[last_idx]
-  if last.t == "Para" or last.t == "Plain" or last.t == "Header" then
-    local new_last = last:clone()
-    local content = pandoc.Inlines({})
-    for _, il in ipairs(last.content) do content:insert(il) end
-    content:insert(end_span)
-    new_last.content = content
-    blocks[last_idx] = new_last
-  else
-    table.insert(blocks, pandoc.Para({ end_span }))
-  end
+  attach(1, start_span, true)
+  attach(#blocks, end_span, false)
 
   return pandoc.Blocks(blocks), false
 end
