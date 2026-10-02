@@ -118,101 +118,29 @@ local function with_first_class_replaced(el, new_class)
   return new_el
 end
 
--- True for any pandoc value that behaves like a list of nodes (a `Blocks`/
--- `Inlines` returned from a filter function) as opposed to a single AST
--- node (which carries a `.t` tag).
-local function is_node_list(v)
-  return type(v) == "table" and v.t == nil
-end
-
--- Recursively wrap every leaf paragraph-like block's inline content in a
--- Span with `attr`. Used to bring block-level (Div) marks down to the
--- run level, since pandoc's docx writer only special-cases Span classes.
--- Both functions return a *list* of blocks (not a single block), since a
--- nested quarto-* mark may itself expand into more than one block (e.g. a
--- nested comment Div splices in a leading/trailing marker paragraph).
-local wrap_blocks_with_span, wrap_block_with_span
-
-function wrap_blocks_with_span(blocks, attr)
-  local result = pandoc.Blocks({})
-  for _, b in ipairs(blocks) do
-    for _, eb in ipairs(wrap_block_with_span(b, attr)) do
-      result:insert(eb)
-    end
-  end
-  return result
-end
-
-function wrap_block_with_span(block, attr)
-  -- A nested block that is itself another quarto-* mark (e.g. a comment
-  -- Div directly inside an insertion Div) must be converted to its own
-  -- native OOXML form directly -- not wrapped in this mark's Span, and not
-  -- left for pandoc's walker to find later (it won't: see the
-  -- `dispatch_element` forward-declaration comment above).
-  if is_quarto_mark(block) then
-    local replaced = dispatch_element(block)
-    if replaced == nil then
-      return { block }
-    elseif is_node_list(replaced) then
-      local items = {}
-      for _, item in ipairs(replaced) do items[#items + 1] = item end
-      return items
-    else
-      return { replaced }
-    end
-  end
-  local t = block.t
-  if t == "Para" or t == "Plain" or t == "Header" then
+-- Wrap every paragraph-like block's inline content, at any depth, in a Span
+-- with `attr`. Used to bring block-level (Div) marks down to the run level,
+-- since pandoc's docx writer only special-cases Span classes. A nested
+-- quarto-* mark is converted to its own native form directly (and not
+-- descended into): the walk below would otherwise wrap its paragraphs too.
+-- CodeBlocks have no run-level home for the marker and are left as-is.
+local function wrap_blocks_with_span(blocks, attr)
+  local function wrap(block)
     local new_block = block:clone()
     new_block.content = pandoc.Inlines({ pandoc.Span(block.content, attr) })
-    return { new_block }
-  elseif t == "BlockQuote" or t == "Div" then
-    local new_block = block:clone()
-    new_block.content = wrap_blocks_with_span(block.content, attr)
-    return { new_block }
-  elseif t == "BulletList" or t == "OrderedList" then
-    local new_block = block:clone()
-    local new_items = {}
-    for i, item in ipairs(block.content) do
-      new_items[i] = wrap_blocks_with_span(item, attr)
-    end
-    new_block.content = new_items
-    return { new_block }
-  else
-    -- CodeBlock, Table, etc: no run-level home for the marker; leave as-is
-    -- rather than corrupt content we can't safely rewrite.
-    return { block }
+    return new_block, false
   end
-end
-
--- Flatten Blocks down to a single Inlines sequence (paragraphs joined by a
--- line break), preserving as much original inline structure/formatting as
--- reasonably possible. Used only for the comment-message text of a
--- *block*-level comment mark (Span content is already Inlines and needs no
--- flattening).
-local function blocks_to_inlines(blocks)
-  local result = pandoc.Inlines({})
-  for i, blk in ipairs(blocks) do
-    if i > 1 then
-      result:insert(pandoc.LineBreak())
-    end
-    local t = blk.t
-    if t == "Para" or t == "Plain" or t == "Header" then
-      for _, il in ipairs(blk.content) do result:insert(il) end
-    elseif t == "BlockQuote" or t == "Div" then
-      for _, il in ipairs(blocks_to_inlines(blk.content)) do result:insert(il) end
-    elseif t == "BulletList" or t == "OrderedList" then
-      for _, item in ipairs(blk.content) do
-        for _, il in ipairs(blocks_to_inlines(item)) do result:insert(il) end
-        result:insert(pandoc.LineBreak())
+  return pandoc.Blocks(blocks):walk({
+    traverse = "topdown",
+    Div = function(div)
+      if is_quarto_mark(div) then
+        return dispatch_element(div), false
       end
-    elseif t == "CodeBlock" then
-      result:insert(pandoc.Code(blk.text))
-    else
-      result:insert(pandoc.Str(pandoc.utils.stringify(blk)))
-    end
-  end
-  return result
+    end,
+    Para = wrap,
+    Plain = wrap,
+    Header = wrap,
+  })
 end
 
 --------------------------------------------------------------------------
@@ -316,7 +244,7 @@ local function docx_handle_edit_comment(el)
   -- Div: the message is the flattened div content; the body keeps the
   -- original (unwrapped) blocks, with range markers spliced onto the
   -- first/last paragraph.
-  local message = blocks_to_inlines(el.content)
+  local message = pandoc.utils.blocks_to_inlines(el.content)
   local start_span = pandoc.Span(message, pandoc.Attr("", { "comment-start" }, attrs))
   local end_span = pandoc.Span({}, pandoc.Attr("", { "comment-end" }, { { "id", id } }))
 
