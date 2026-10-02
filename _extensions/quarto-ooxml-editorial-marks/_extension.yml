@@ -6,3 +6,5 @@ contributes:
   filters:
     - path: ooxml-editorial-marks.lua
       at: post-quarto
+    - path: stamp-attribution.lua
+      at: pre-quarto

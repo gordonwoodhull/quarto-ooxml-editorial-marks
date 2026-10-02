@@ -57,6 +57,7 @@ def docx_assertions(path, expected):
             "highlight": count(r'<w:highlight w:val="yellow"', document_xml),
             "comment_range_start": count(r"<w:commentRangeStart\b", document_xml),
             "comment_range_end": count(r"<w:commentRangeEnd\b", document_xml),
+            "authors": sorted(re.findall(r'<w:(?:ins|del) [^>]*w:author="([^"]*)"', document_xml)),
         }
         for key, expected_value in expected.items():
             if key == "comments" or key == "comment_ids":
@@ -146,6 +147,10 @@ EXPECTATIONS = {
     "05-comment-on-code.qmd": {
         "docx": dict(ins=0, delete=0, highlight=0, comment_range_start=3,
                       comment_range_end=3, comments=3),
+    },
+    "07-authors.qmd": {
+        "docx": dict(ins=2, delete=2, comment_range_start=1, comment_range_end=1,
+                      comments=1, authors=["Eve", "Frank", "Gina", "Hal"]),
     },
     "06-pptx-marks.qmd": {
         "pptx": dict(underline=1, strike=1, highlight=1, comment_fallback=1),

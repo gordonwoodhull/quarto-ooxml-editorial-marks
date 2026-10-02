@@ -101,6 +101,19 @@ end
 -- docx handlers
 --------------------------------------------------------------------------
 
+-- Attr for the Span that stands in for a block-level insertion/deletion:
+-- the writer reads w:author / w:date from author= / date= on the Span, so
+-- those are carried over from the Div.
+local function track_change_attr(el, class)
+  local kvs = {}
+  for _, key in ipairs({ "author", "date" }) do
+    if el.attributes[key] then
+      table.insert(kvs, { key, el.attributes[key] })
+    end
+  end
+  return pandoc.Attr("", { class }, kvs)
+end
+
 --- Emit a Word `<w:ins>` run (inline) or wrap each paragraph's runs in one
 --- (block), via pandoc's native "insertion" class support. w:author/w:date
 --- come from el.attributes.author / .date when present (pandoc defaults
@@ -108,8 +121,7 @@ end
 --- pandoc, so no id management is needed here.
 local function docx_handle_insert(el)
   if el.t == "Div" then
-    local attr = pandoc.Attr("", { "insertion" }, {})
-    return wrap_blocks_with_span(el.content, attr)
+    return wrap_blocks_with_span(el.content, track_change_attr(el, "insertion"))
   end
   return with_first_class_replaced(el, "insertion")
 end
@@ -119,8 +131,7 @@ end
 --- once opened in Word with track changes displayed.
 local function docx_handle_delete(el)
   if el.t == "Div" then
-    local attr = pandoc.Attr("", { "deletion" }, {})
-    return wrap_blocks_with_span(el.content, attr)
+    return wrap_blocks_with_span(el.content, track_change_attr(el, "deletion"))
   end
   return with_first_class_replaced(el, "deletion")
 end
