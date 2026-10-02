@@ -102,7 +102,7 @@ comment-end pair), relying on the walker to separately visit a nested mark
 left untouched inside one of those lists would silently skip it — which is
 exactly the bug the first nesting test in this repo's history caught (a
 comment nested inside a block insertion vanished entirely). The fix: the
-block-wrapping helper (`wrap_block_with_span` in the filter) detects a
+block-wrapping helper (`wrap_blocks_with_span` in the filter) detects a
 nested block that itself carries a recognized `quarto-*` class and
 recursively calls the filter's own dispatch function on it directly,
 rather than leaving it for the walker.
@@ -114,7 +114,7 @@ it, any nested `quarto-*` mark inside is left with its original class,
 unrecognized by both our filter and pandoc's writer — so it just renders
 as plain text as part of the comment message. No manual text-flattening
 needed for the inline case; the block-comment case does flatten (see
-`blocks_to_inlines` in the filter) since a comment-start Span needs Inlines
+`pandoc.utils.blocks_to_inlines`) since a comment-start Span needs Inlines
 content and a block comment's own content is Blocks.
 
 ### The "comment on a code block" idiom — corrected
